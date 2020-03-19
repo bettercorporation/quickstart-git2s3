@@ -151,28 +151,9 @@ def lambda_handler(event, context):
             if k1 == k2:
                 secure = True
     # TODO: Add the ability to clone TFS repo using SSH keys
-    try:
-        # GitHub
-        full_name = event['body-json']['repository']['full_name']
-    except KeyError:
-        try:
-            # BitBucket #14
-            full_name = event['body-json']['repository']['fullName']
-        except KeyError:
-            try:
-                # GitLab
-                full_name = event['body-json']['repository']['path_with_namespace']
-            except KeyError:
-                try:
-                    # GitLab 8.5+
-                    full_name = event['body-json']['project']['path_with_namespace']
-                except KeyError:
-                    try:
-                        # BitBucket server
-                        full_name = event['body-json']['repository']['name']
-                    except KeyError:
-                        # BitBucket pull-request
-                        full_name = event['body-json']['pullRequest']['fromRef']['repository']['name']
+    # GitHub
+    full_name = event['body-json']['repository']['full_name']
+
     if not secure:
         logger.error('Source IP %s is not allowed' % event['context']['source-ip'])
         raise Exception('Source IP %s is not allowed' % event['context']['source-ip'])
@@ -183,55 +164,38 @@ def lambda_handler(event, context):
         repo_name = full_name + '/release'
     else:
         repo_name = full_name
-        try:
-            # branch names should contain [name] only, tag names - "tags/[name]"
-            branch_name = event['body-json']['ref'].replace('refs/heads/', '').replace('refs/tags/', 'tags/')
-        except KeyError:
-            try:
-                # Bibucket server
-                branch_name = event['body-json']['push']['changes'][0]['new']['name']
-            except:
-                branch_name = 'master'
-    try:
-        # GitLab
-        remote_url = event['body-json']['project']['git_ssh_url']
-    except Exception:
-        try:
-            remote_url = 'git@'+event['body-json']['repository']['links']['html']['href'].replace('https://', '').replace('/', ':', 1)+'.git'
-        except:
-            try:
-                # GitHub
-                remote_url = event['body-json']['repository']['ssh_url']
-            except:
-                # Bitbucket
-                try:
-                    for i, url in enumerate(event['body-json']['repository']['links']['clone']):
-                        if url['name'] == 'ssh':
-                            ssh_index = i
-                    remote_url = event['body-json']['repository']['links']['clone'][ssh_index]['href']
-                except:
-                    # BitBucket pull-request
-                    for i, url in enumerate(event['body-json']['pullRequest']['fromRef']['repository']['links']['clone']):
-                        if url['name'] == 'ssh':
-                            ssh_index = i
+        # branch names should contain [name] only, tag names - "tags/[name]"
+        branch_name = event['body-json']['ref'].replace('refs/heads/', '').replace('refs/tags/', 'tags/')
 
-                    remote_url = event['body-json']['pullRequest']['fromRef']['repository']['links']['clone'][ssh_index]['href']
-    repo_path = '/tmp/%s' % repo_name
-    creds = RemoteCallbacks(credentials=get_keys(keybucket, pubkey), )
-    try:
-        repository_path = discover_repository(repo_path)
-        repo = Repository(repository_path)
-        logger.info('found existing repo, using that...')
-    except Exception:
-        logger.info('creating new repo for %s in %s' % (remote_url, repo_path))
-        repo = create_repo(repo_path, remote_url, creds)
-    pull_repo(repo, branch_name, remote_url, creds)
-    zipfile = zip_repo(repo_path, repo_name)
-    push_s3(zipfile, repo_name, branch_name, outputbucket)
-    if cleanup:
-        logger.info('Cleanup Lambda container...')
-        shutil.rmtree(repo_path)
-        os.remove(zipfile)
-        os.remove('/tmp/id_rsa')
-        os.remove('/tmp/id_rsa.pub')
-    return 'Successfully updated %s' % repo_name
+    if branch_name == 'staging' or branch_name == 'master':
+      try:
+          # GitHub
+          remote_url = event['body-json']['repository']['ssh_url']
+      except Exception:
+          remote_url = 'git@'+event['body-json']['repository']['links']['html']['href'].replace('https://', '').replace('/', ':', 1)+'.git'
+        
+      repo_path = '/tmp/%s' % repo_name
+      creds = RemoteCallbacks(credentials=get_keys(keybucket, pubkey), )
+      try:
+          repository_path = discover_repository(repo_path)
+          repo = Repository(repository_path)
+          logger.info('found existing repo, using that...')
+      except Exception:
+          logger.info('creating new repo for %s in %s' % (remote_url, repo_path))
+          repo = create_repo(repo_path, remote_url, creds)
+      pull_repo(repo, branch_name, remote_url, creds)
+      zipfile = zip_repo(repo_path, repo_name)
+
+      if branch_name == 'staging':
+          outputbucket = 'staging-deployment-stack-outputbucket-vowmso1qmquu'
+          push_s3(zipfile, repo_name, branch_name, outputbucket)
+      else: #branch_name == 'master
+          push_s3(zipfile, repo_name, branch_name, outputbucket)
+          
+      if cleanup:
+          logger.info('Cleanup Lambda container...')
+          shutil.rmtree(repo_path)
+          os.remove(zipfile)
+          os.remove('/tmp/id_rsa')
+          os.remove('/tmp/id_rsa.pub')
+      return 'Successfully updated %s' % repo_name
